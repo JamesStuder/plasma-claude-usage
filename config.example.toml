@@ -1,0 +1,16 @@
+# ~/.config/claude-usage/config.toml — every key is optional.
+
+# What right click / "Open Claude Code" runs.
+open_command = "konsole -e claude"
+
+# If you run Claude Code inside tmux, point this at its pane to get the MODEL buttons
+# (they type "/model <id>" into that session). Empty = no model buttons.
+# tmux_target = "-L claude -t claude"      # -L <socket> / -S <path>, -t <target>
+
+# Buttons shown under MODEL: [label, model id]
+models = [
+    ["Fable 5.1", "claude-fable-5-1"],
+    ["Opus 5.5", "claude-opus-5-5"],
+    ["Sonnet 5", "claude-sonnet-5"],
+    ["Haiku 4.5", "claude-haiku-4-5-20251001"],
+]
