@@ -7,7 +7,7 @@
         "Authors": [{ "Name": "James Studer" }],
         "Category": "System Information",
         "License": "MIT",
-        "Version": "1.0.0",
+        "Version": "1.1.0",
         "Website": "https://github.com/JamesStuder/plasma-claude-usage"
     },
     "KPackageStructure": "Plasma/Applet",

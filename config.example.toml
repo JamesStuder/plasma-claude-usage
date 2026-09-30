@@ -4,8 +4,11 @@
 open_command = "konsole -e claude"
 
 # If you run Claude Code inside tmux, point this at its pane to get the MODEL buttons
-# (they type "/model <id>" into that session). Empty = no model buttons.
+# (they type "/model <id>" into that session) and the Restart button. Empty = neither.
 # tmux_target = "-L claude -t claude"      # -L <socket> / -S <path>, -t <target>
+
+# What the Restart button starts in that pane (it adds --resume <session id>).
+# claude_command = "claude"
 
 # Buttons shown under MODEL: [label, model id]
 models = [

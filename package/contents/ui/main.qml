@@ -19,6 +19,7 @@ PlasmoidItem {
     readonly property string refreshCmd: tool + " --json --refresh"
     readonly property string openCmd: tool + " --open"
     readonly property string modelCmd: tool + " --set-model "
+    readonly property string restartCmd: tool + " --restart"
     readonly property var modelChoices: usage && usage.model_choices ? usage.model_choices : []
     property bool running: false
     property var usage: null
@@ -32,6 +33,7 @@ PlasmoidItem {
     readonly property real modelPeak: Math.max(1, models.reduce((m, d) => Math.max(m, d.total || 0), 0))
 
     function open() { exec.connectSource(openCmd) }
+    function restart() { exec.connectSource(restartCmd + " #" + Date.now()) }
     function setModel(id) { exec.connectSource(modelCmd + id + " #" + Date.now()) }
     function openUsagePage() { exec.connectSource("xdg-open https://claude.ai/settings/usage #" + Date.now()) }
     function refresh(force) { exec.connectSource((force ? refreshCmd : usageCmd) + " #" + Date.now()) }
@@ -138,6 +140,12 @@ PlasmoidItem {
                     onClicked: root.refresh(true)
                 }
                 Item { Layout.fillWidth: true }
+                PC3.Button {
+                    icon.name: "system-reboot"
+                    text: "Restart"
+                    visible: root.running && !!(root.usage && root.usage.can_switch_model)
+                    onClicked: { root.expanded = false; root.restart() }
+                }
                 PC3.Button {
                     icon.name: "claude-code"
                     text: root.running ? "Open Claude Code" : "Start Claude Code"

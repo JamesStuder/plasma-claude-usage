@@ -7,6 +7,8 @@
   claude-usage --open       run open_command (widget: right click / button)
   claude-usage --running    "on" if Claude Code is running, else "off"
   claude-usage --set-model <id>   type "/model <id>" into the Claude session (needs tmux_target)
+  claude-usage --restart    restart the Claude session in its tmux pane and resume the same
+                            conversation, e.g. after an update (needs tmux_target)
 
 Limits come from the same endpoint Claude Code's /usage command uses, called with
 Claude Code's existing login at most every 5 minutes (cached in
@@ -32,7 +34,8 @@ CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-usage"
 CONFIG_FILE = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "claude-usage" / "config.toml"
 DEFAULTS = {
     "open_command": "konsole -e claude",
-    "tmux_target": "",        # e.g. "-L claude -t claude" — enables the model buttons
+    "tmux_target": "",        # e.g. "-L claude -t claude" — enables the model + restart buttons
+    "claude_command": "claude",   # what --restart starts in the pane (plus --resume <id>)
     "models": [["Fable 5.1", "claude-fable-5-1"], ["Opus 5.5", "claude-opus-5-5"],
                ["Sonnet 5", "claude-sonnet-5"], ["Haiku 4.5", "claude-haiku-4-5-20251001"]],
 }
@@ -251,6 +254,46 @@ def set_model(model_id):
     notify(f"Model: {name}", "Sent /model to the Claude session.")
 
 
+def pane_session():
+    """(session id, cwd) of the interactive Claude Code running in the tmux pane, if any.
+
+    Claude Code registers each running instance in <config dir>/sessions/<pid>.json;
+    the pane's shell or Claude itself is the pane pid, so check it and its children."""
+    sock, target = tmux_args()
+    r = subprocess.run(["tmux", *sock, "display-message", "-p", *target, "#{pane_pid}"],
+                       capture_output=True, text=True)
+    pane_pid = r.stdout.strip()
+    if not pane_pid:
+        return None, None
+    kids = subprocess.run(["pgrep", "-P", pane_pid], capture_output=True, text=True).stdout.split()
+    for pid in [pane_pid, *kids]:
+        try:
+            info = json.loads((CLAUDE_DIR / "sessions" / f"{pid}.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if info.get("kind", "interactive") == "interactive" and info.get("sessionId"):
+            return info["sessionId"], info.get("cwd")
+    return None, None
+
+
+def restart():
+    if not CFG["tmux_target"]:
+        notify("Restart not set up", "Set tmux_target in ~/.config/claude-usage/config.toml.")
+        return
+    if not running():
+        subprocess.Popen(CFG["open_command"], shell=True, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    sock, target = tmux_args()
+    sid, cwd = pane_session()
+    cmd = CFG["claude_command"] + (f" --resume {shlex.quote(sid)}" if sid else "")
+    # respawn-pane -k ends the running Claude and starts the new one in the same pane,
+    # so an attached terminal window stays open.
+    subprocess.run(["tmux", *sock, "respawn-pane", "-k", *target,
+                    *(["-c", cwd] if cwd else []), cmd])
+    notify("Claude Code restarted", "Resumed the same conversation." if sid else "Started a new session.")
+
+
 def human(n):
     for unit, div in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
         if n >= div:
@@ -276,6 +319,9 @@ def main():
         return
     if "--running" in sys.argv:
         print("on" if running() else "off")
+        return
+    if "--restart" in sys.argv:
+        restart()
         return
     if "--set-model" in sys.argv:
         set_model(sys.argv[sys.argv.index("--set-model") + 1])

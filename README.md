@@ -15,7 +15,7 @@ and how many tokens you used today and this week.
   - **Tokens by model** — today's tokens per model, with the input / output / cache split
   - **Model** — optional buttons that switch the model of a Claude Code session running
     in tmux
-  - **Refresh**, **Open Claude Code**, **Usage on claude.ai**
+  - **Refresh**, **Restart** (tmux only), **Open Claude Code**, **Usage on claude.ai**
 - **Right click** opens Claude Code.
 - **Hover** for a short summary.
 
@@ -33,7 +33,7 @@ Today: 131.6M tokens (385.6k output)
 - Python 3.11+
 - Claude Code, signed in with a Claude subscription (Pro / Max / Team) — the limits
   come from your Claude Code login
-- Optional: `tmux` for the model buttons, `notify-send` for their confirmations
+- Optional: `tmux` for the model and restart buttons, `notify-send` for their confirmations
 
 ## Install
 
@@ -60,7 +60,8 @@ Remove with `./uninstall.sh`.
 | Key | Default | What it does |
 |---|---|---|
 | `open_command` | `konsole -e claude` | What right click / *Open Claude Code* runs |
-| `tmux_target` | *(empty)* | e.g. `-L claude -t claude` — tmux socket and pane of your Claude Code session; enables the **Model** buttons |
+| `tmux_target` | *(empty)* | e.g. `-L claude -t claude` — tmux socket and pane of your Claude Code session; enables the **Model** and **Restart** buttons |
+| `claude_command` | `claude` | What **Restart** starts in the pane (with `--resume <session id>`) |
 | `models` | current models | The model buttons: `[label, model id]` pairs |
 
 `CLAUDE_CONFIG_DIR` is honoured if you keep Claude Code's files somewhere other than
@@ -81,6 +82,10 @@ Remove with `./uninstall.sh`.
   window.
 - **Model buttons** type `/model <id>` into the tmux pane you configured. Use them when
   Claude Code's input box is empty.
+- **Restart** ends the Claude Code in that tmux pane and starts it again with
+  `--resume <session id>`, so the same conversation continues — handy after an update or
+  a settings change that needs a restart. The session id comes from Claude Code's
+  `~/.claude/sessions/<pid>.json`; if none is found it starts a fresh session.
 
 Nothing is sent anywhere except the usage request to the same Anthropic endpoint Claude
 Code itself uses.
