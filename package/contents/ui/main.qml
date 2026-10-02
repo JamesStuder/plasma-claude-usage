@@ -7,8 +7,9 @@ import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 
-// Claude Code usage in the system tray.
-// Left click = usage panel (limits, pace, tokens by day, tokens by model, model switch);
+// Claude Code usage and background sessions, for a Plasma panel (or the system tray).
+// Left click = panel: background sessions (left column) + usage (limits, pace, tokens by
+// day, tokens by model, model switch; right column);
 // right click = open Claude Code. All data and actions go through ~/.local/bin/claude-usage.
 PlasmoidItem {
     id: root
@@ -20,9 +21,22 @@ PlasmoidItem {
     readonly property string openCmd: tool + " --open"
     readonly property string modelCmd: tool + " --set-model "
     readonly property string restartCmd: tool + " --restart"
+    readonly property string sessionsCmd: tool + " --sessions"
     readonly property var modelChoices: usage && usage.model_choices ? usage.model_choices : []
     property bool running: false
     property var usage: null
+    property var sessionData: null
+    property bool showAllDone: false
+    property string confirmRemove: ""   // id whose remove button was clicked once
+
+    readonly property var sessions: sessionData && sessionData.sessions ? sessionData.sessions : []
+    readonly property int needsCount: sessions.filter(s => s.group === "needs").length
+    readonly property var sessionGroups: [
+        { key: "needs", title: "NEEDS INPUT", icon: "dialog-question", color: Kirigami.Theme.neutralTextColor },
+        { key: "working", title: "WORKING", icon: "media-playback-start", color: Kirigami.Theme.highlightColor },
+        { key: "done", title: "COMPLETED", icon: "dialog-ok-apply", color: Kirigami.Theme.positiveTextColor },
+        { key: "failed", title: "FAILED", icon: "dialog-error", color: Kirigami.Theme.negativeTextColor }
+    ]
 
     readonly property var limits: usage && usage.limits ? usage.limits : []
     readonly property var days: usage && usage.days ? usage.days : []
@@ -36,6 +50,13 @@ PlasmoidItem {
     function restart() { exec.connectSource(restartCmd + " #" + Date.now()) }
     function setModel(id) { exec.connectSource(modelCmd + id + " #" + Date.now()) }
     function openUsagePage() { exec.connectSource("xdg-open https://claude.ai/settings/usage #" + Date.now()) }
+    function refreshSessions() { exec.connectSource(sessionsCmd + " #" + Date.now()) }
+    function openSession(id) { exec.connectSource(tool + " --open-session " + id + " #" + Date.now()) }
+    function removeSession(id) {
+        confirmRemove = ""
+        sessionData = Object.assign({}, sessionData, { sessions: sessions.filter(s => s.id !== id) })
+        exec.connectSource(tool + " --remove-session " + id + " #" + Date.now())
+    }
     function refresh(force) { exec.connectSource((force ? refreshCmd : usageCmd) + " #" + Date.now()) }
     function levelColor(p) {
         return p >= 90 ? Kirigami.Theme.negativeTextColor
@@ -46,13 +67,17 @@ PlasmoidItem {
     Plasmoid.icon: "claude-code"             // falls back to utilities-terminal below
     Plasmoid.status: PlasmaCore.Types.ActiveStatus
     toolTipMainText: running ? "Claude Code running" : "Claude Code not running"
-    toolTipSubText: (session ? `Session ${session.percent}% · weekly ${maxPercent}% max\n` : "")
+    toolTipSubText: (needsCount > 0 ? `${needsCount} session${needsCount > 1 ? "s" : ""} need input\n` : "")
+        + (session ? `Session ${session.percent}% · weekly ${maxPercent}% max\n` : "")
         + "Left click: usage  ·  Right click: open Claude"
     // No preferredRepresentation here: the system tray only shows a popup for applets
     // that leave it unset (setActiveApplet checks !applet.preferredRepresentation).
 
     // The tray hands both buttons to our MouseArea: left toggles the popup, right opens Claude.
-    onExpandedChanged: () => { if (root.expanded) root.refresh(false) }
+    onExpandedChanged: () => {
+        if (root.expanded) { root.refresh(false); root.refreshSessions() }
+        else { root.confirmRemove = ""; root.showAllDone = false }
+    }
 
     compactRepresentation: Item {
         Kirigami.Icon {
@@ -78,6 +103,22 @@ PlasmoidItem {
                 font.bold: true
             }
         }
+        Rectangle {
+            visible: root.needsCount > 0
+            anchors { left: parent.left; top: parent.top }
+            height: Math.round(parent.height * 0.45)
+            width: Math.max(height, needsText.implicitWidth + 4)
+            radius: height / 2
+            color: Kirigami.Theme.neutralTextColor
+            PC3.Label {
+                id: needsText
+                anchors.centerIn: parent
+                text: root.needsCount
+                color: "white"
+                font.pixelSize: parent.height * 0.75
+                font.bold: true
+            }
+        }
         MouseArea {
             id: mouse
             anchors.fill: parent
@@ -91,9 +132,15 @@ PlasmoidItem {
     }
 
     fullRepresentation: PlasmaExtras.Representation {
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 20
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 30
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 16
+        id: panelRep
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 46
+        // Tall enough for the whole right (usage) column; only the sessions column scrolls.
+        // A minimum, because the popup reuses its saved size and only grows to the minimum.
+        readonly property real fitHeight: implicitHeaderHeight + implicitFooterHeight
+            + usageColumn.implicitHeight + topPadding + bottomPadding + Kirigami.Units.smallSpacing * 2
+        Layout.preferredHeight: fitHeight
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 36
+        Layout.minimumHeight: fitHeight
         collapseMarginsHint: true
 
         header: PlasmaExtras.PlasmoidHeading {
@@ -155,12 +202,66 @@ PlasmoidItem {
 
         }
 
-        contentItem: PC3.ScrollView {
-            id: scroll
+        // Two columns: sessions on the left, usage (limits, tokens, pace, model) on the right.
+        contentItem: RowLayout {
+          spacing: 0
+          PC3.ScrollView {
+            id: sessionScroll
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 25
             contentWidth: availableWidth
             PC3.ScrollBar.horizontal.policy: PC3.ScrollBar.AlwaysOff
 
             ColumnLayout {
+                width: sessionScroll.availableWidth - Kirigami.Units.largeSpacing * 2
+                x: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.smallSpacing
+                // SESSIONS: background sessions by state; click opens a window, X removes
+                Repeater {
+                    model: root.sessionGroups
+                    delegate: ColumnLayout {
+                        id: group
+                        required property var modelData
+                        readonly property var all: root.sessions.filter(s => s.group === modelData.key)
+                        readonly property bool capped: modelData.key === "done" && !root.showAllDone && all.length > 10
+                        Layout.fillWidth: true
+                        visible: all.length > 0
+                        spacing: 2
+                        SectionHeader { text: group.modelData.title + "  ·  " + group.all.length }
+                        Repeater {
+                            model: group.capped ? group.all.slice(0, 10) : group.all
+                            delegate: SessionRow { groupInfo: group.modelData }
+                        }
+                        PC3.ToolButton {
+                            visible: group.modelData.key === "done" && group.all.length > 10
+                            text: root.showAllDone ? "Show fewer" : `Show all ${group.all.length}`
+                            font: Kirigami.Theme.smallFont
+                            onClicked: root.showAllDone = !root.showAllDone
+                        }
+                    }
+                }
+                PC3.Label {
+                    visible: root.sessions.length === 0
+                    Layout.topMargin: Kirigami.Units.largeSpacing
+                    text: "No background sessions"
+                    opacity: 0.6
+                }
+                Item { implicitHeight: Kirigami.Units.largeSpacing }
+            }
+          }
+
+          Kirigami.Separator { Layout.fillHeight: true }
+
+          PC3.ScrollView {
+            id: scroll
+            Layout.fillHeight: true
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 20
+            contentWidth: availableWidth
+            PC3.ScrollBar.horizontal.policy: PC3.ScrollBar.AlwaysOff
+
+            ColumnLayout {
+                id: usageColumn
                 width: scroll.availableWidth - Kirigami.Units.largeSpacing * 2
                 x: Kirigami.Units.largeSpacing
                 spacing: Kirigami.Units.smallSpacing
@@ -286,6 +387,7 @@ PlasmoidItem {
                 }
                 Item { implicitHeight: Kirigami.Units.largeSpacing }
             }
+          }
         }
     }
 
@@ -294,6 +396,85 @@ PlasmoidItem {
         font.bold: true
         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
         opacity: 0.6
+    }
+
+    component SessionRow: Rectangle {
+        id: row
+        required property var modelData
+        property var groupInfo
+        readonly property bool confirming: root.confirmRemove === modelData.id
+        Layout.fillWidth: true
+        implicitHeight: rowLayout.implicitHeight + Kirigami.Units.smallSpacing * 2
+        radius: Kirigami.Units.cornerRadius
+        color: rowMouse.containsMouse ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.18) : "transparent"
+        MouseArea {
+            id: rowMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: { root.expanded = false; root.openSession(row.modelData.id) }
+        }
+        RowLayout {
+            id: rowLayout
+            anchors { fill: parent; margins: Kirigami.Units.smallSpacing }
+            spacing: Kirigami.Units.smallSpacing
+            Kirigami.Icon {
+                source: row.groupInfo.icon
+                color: row.groupInfo.color
+                isMask: true
+                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                Layout.alignment: Qt.AlignTop
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                RowLayout {
+                    Layout.fillWidth: true
+                    PC3.Label {
+                        text: row.modelData.name
+                        font.bold: row.groupInfo.key === "needs"
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    PC3.Label {
+                        text: (row.modelData.open ? "open · " : "") + row.modelData.ago
+                        opacity: 0.6
+                        font: Kirigami.Theme.smallFont
+                    }
+                }
+                PC3.Label {
+                    visible: text !== ""
+                    text: row.modelData.text || ""
+                    opacity: 0.7
+                    font: Kirigami.Theme.smallFont
+                    elide: Text.ElideRight
+                    maximumLineCount: 2
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+            }
+            PC3.ToolButton {
+                icon.name: row.confirming ? "edit-delete" : "window-close"
+                text: row.confirming ? "Remove" : ""
+                Layout.alignment: Qt.AlignTop
+                PC3.ToolTip.text: row.confirming
+                    ? (row.groupInfo.key === "working" ? "Click again: stop and remove" : "Click again to remove")
+                    : "Remove from list"
+                PC3.ToolTip.visible: hovered
+                PC3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                onClicked: {
+                    if (row.confirming) root.removeSession(row.modelData.id)
+                    else { root.confirmRemove = row.modelData.id; confirmReset.restart() }
+                }
+            }
+        }
+    }
+
+    Timer {
+        id: confirmReset
+        interval: 4000
+        onTriggered: root.confirmRemove = ""
     }
 
     component Meter: Item {
@@ -321,6 +502,11 @@ PlasmoidItem {
         onNewData: (source, data) => {
             if (source === root.pollCmd)
                 root.running = data.stdout.trim() === "on"
+            else if (source.startsWith(root.sessionsCmd + " #")) {
+                try { root.sessionData = JSON.parse(data.stdout) } catch (e) {}
+            }
+            else if (source.startsWith(root.tool + " --remove-session "))
+                root.refreshSessions()
             else if (source.startsWith(root.usageCmd) || source.startsWith(root.refreshCmd)) {
                 try { root.usage = JSON.parse(data.stdout) } catch (e) {}
             }
@@ -334,6 +520,14 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         onTriggered: exec.connectSource(root.pollCmd)
+    }
+    // Sessions: every 3 s while the popup is open, every 15 s for the badge otherwise.
+    Timer {
+        interval: root.expanded ? 3000 : 15000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.refreshSessions()
     }
     Timer {
         interval: 60000

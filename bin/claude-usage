@@ -9,6 +9,11 @@
   claude-usage --set-model <id>   type "/model <id>" into the Claude session (needs tmux_target)
   claude-usage --restart    restart the Claude session in its tmux pane and resume the same
                             conversation, e.g. after an update (needs tmux_target)
+  claude-usage --sessions   JSON: background sessions grouped needs / working / done / failed
+  claude-usage --open-session <id>    raise that session's window, or open a terminal with
+                            `claude attach <id>` (session_command)
+  claude-usage --remove-session <id>  `claude rm <id>`: drop it from the list (the
+                            conversation log is kept, `claude --resume` still finds it)
 
 Limits come from the same endpoint Claude Code's /usage command uses, called with
 Claude Code's existing login at most every 5 minutes (cached in
@@ -16,6 +21,9 @@ Claude Code's existing login at most every 5 minutes (cached in
 interfere with Claude Code; if the token has expired the last numbers are shown
 until Claude Code renews it. The endpoint is not a documented public API and may
 change.
+
+Background sessions come from `claude agents --json --all`, with the status line
+and result from <config dir>/jobs/<id>/state.json.
 
 Token counts are summed from Claude Code's local session logs, de-duplicated per
 message, by local day.
@@ -36,6 +44,9 @@ DEFAULTS = {
     "open_command": "konsole -e claude",
     "tmux_target": "",        # e.g. "-L claude -t claude" — enables the model + restart buttons
     "claude_command": "claude",   # what --restart starts in the pane (plus --resume <id>)
+    # Terminal for --open-session; {claude} = first word of claude_command, {id}, {name}.
+    # Keep it in the foreground (konsole --separate) so its window can be raised later.
+    "session_command": "konsole --separate -p tabtitle={name} -e {claude} attach {id}",
     "models": [["Fable 5.1", "claude-fable-5-1"], ["Opus 5.5", "claude-opus-5-5"],
                ["Sonnet 5", "claude-sonnet-5"], ["Haiku 4.5", "claude-haiku-4-5-20251001"]],
 }
@@ -294,6 +305,111 @@ def restart():
     notify("Claude Code restarted", "Resumed the same conversation." if sid else "Started a new session.")
 
 
+SESSION_GROUP = {"blocked": "needs", "working": "working", "done": "done", "failed": "failed"}
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+
+
+def claude_bin():
+    return (shlex.split(CFG["claude_command"]) or ["claude"])[0]
+
+
+def one_line(v, n=160):
+    if isinstance(v, dict):
+        v = v.get("result")
+    v = " ".join(str(v or "").split())
+    return v if len(v) <= n else v[: n - 1] + "…"
+
+
+def ago(ms):
+    s = max(0, time.time() - ms / 1000)
+    for unit, div in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= div:
+            return f"{int(s // div)}{unit}"
+    return "now"
+
+
+def session_window_pid(sid):
+    try:
+        pid = int((RUNTIME / f"claude-usage-session-{sid}.pid").read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def sessions():
+    try:
+        r = subprocess.run([claude_bin(), "agents", "--json", "--all"], capture_output=True,
+                           text=True, timeout=20, cwd=HOME)
+        agents = json.loads(r.stdout)
+    except Exception as e:
+        return {"error": f"claude agents failed ({type(e).__name__})", "sessions": []}
+    out = []
+    for a in agents:
+        if a.get("kind") != "background":
+            continue
+        sid = a["id"]
+        try:
+            st = json.loads((CLAUDE_DIR / "jobs" / sid / "state.json").read_text())
+        except (OSError, ValueError):
+            st = {}
+        group = SESSION_GROUP.get(a.get("state"), "working")
+        text = {"needs": st.get("needs") or st.get("detail"),
+                "working": st.get("detail")}.get(group, st.get("output") or st.get("detail"))
+        try:
+            updated = datetime.fromisoformat(st["updatedAt"].replace("Z", "+00:00")).timestamp() * 1000
+        except (KeyError, ValueError, AttributeError):
+            updated = a.get("startedAt", 0)
+        name = a.get("name") if a.get("name") and a.get("name") != sid else one_line(st.get("intent"), 60)
+        out.append({"id": sid, "name": name or "Untitled session", "group": group,
+                    "text": one_line(text), "updated": updated, "ago": ago(updated),
+                    "open": session_window_pid(sid) is not None})
+    out.sort(key=lambda s: -s["updated"])
+    return {"sessions": out}
+
+
+def raise_window(pid):
+    """Raise a window by process id with a one-shot KWin script (Plasma only)."""
+    if not shutil.which("qdbus6"):
+        return False
+    js = RUNTIME / "claude-usage-focus.js"
+    js.write_text("for (const w of workspace.windowList()) {\n"
+                  f"    if (w.pid === {pid}) {{ w.minimized = false; workspace.activeWindow = w; break; }}\n}}\n")
+    q = ["qdbus6", "org.kde.KWin", "/Scripting"]
+    subprocess.run(q + ["org.kde.kwin.Scripting.unloadScript", "claude-usage-focus"], capture_output=True)
+    n = subprocess.run(q + ["org.kde.kwin.Scripting.loadScript", str(js), "claude-usage-focus"],
+                       capture_output=True, text=True).stdout.strip()
+    subprocess.run(["qdbus6", "org.kde.KWin", f"/Scripting/Script{n}", "org.kde.kwin.Script.run"],
+                   capture_output=True)
+    subprocess.run(q + ["org.kde.kwin.Scripting.unloadScript", "claude-usage-focus"], capture_output=True)
+    return True
+
+
+def open_session(sid):
+    pid = session_window_pid(sid)
+    if pid and raise_window(pid):
+        return
+    name = next((s["name"] for s in sessions()["sessions"] if s["id"] == sid), sid)
+    cmd = [p.format(claude=claude_bin(), id=sid, name=f"Claude · {name}")
+           for p in shlex.split(CFG["session_command"])]
+    # A scope of its own, so restarting plasmashell doesn't close the window. The session
+    # itself runs in Claude Code's background daemon; closing the window only detaches.
+    if shutil.which("systemd-run"):
+        cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+               f"--unit=claude-usage-session-{sid}-{os.getpid()}", *cmd]
+    p = subprocess.Popen(cmd, cwd=HOME, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # systemd-run --scope execs the command in place, so this is the terminal's pid.
+    (RUNTIME / f"claude-usage-session-{sid}.pid").write_text(str(p.pid))
+
+
+def remove_session(sid):
+    r = subprocess.run([claude_bin(), "rm", sid], capture_output=True, text=True, timeout=60, cwd=HOME)
+    (RUNTIME / f"claude-usage-session-{sid}.pid").unlink(missing_ok=True)
+    if r.returncode != 0:
+        notify("Couldn't remove session", (r.stdout + r.stderr).strip()[:200])
+
+
 def human(n):
     for unit, div in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
         if n >= div:
@@ -323,6 +439,13 @@ def main():
     if "--restart" in sys.argv:
         restart()
         return
+    if "--sessions" in sys.argv:
+        print(json.dumps(sessions()))
+        return
+    for flag, fn in (("--open-session", open_session), ("--remove-session", remove_session)):
+        if flag in sys.argv:
+            fn(sys.argv[sys.argv.index(flag) + 1])
+            return
     if "--set-model" in sys.argv:
         set_model(sys.argv[sys.argv.index("--set-model") + 1])
         return

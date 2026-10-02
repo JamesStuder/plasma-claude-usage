@@ -13,6 +13,5 @@ else
     kpackagetool6 -t Plasma/Applet -i package
 fi
 echo
-echo "Installed. Add it via: right-click the system tray arrow → Configure System Tray → Entries →"
-echo "'Claude Code Usage' → Always shown. (A Plasma restart may be needed the first time:"
-echo "  systemctl --user restart plasma-plasmashell)"
+echo "Installed. Add it via: right-click your panel → Add or Manage Widgets → 'Claude Code Usage'."
+echo "(A Plasma restart may be needed the first time: systemctl --user restart plasma-plasmashell)"

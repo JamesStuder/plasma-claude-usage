@@ -10,6 +10,10 @@ open_command = "konsole -e claude"
 # What the Restart button starts in that pane (it adds --resume <session id>).
 # claude_command = "claude"
 
+# Terminal a background session opens in (click in the session list). {claude} = first
+# word of claude_command, {id} / {name} = the session's. Keep it in the foreground.
+# session_command = "konsole --separate -p tabtitle={name} -e {claude} attach {id}"
+
 # Buttons shown under MODEL: [label, model id]
 models = [
     ["Fable 5.1", "claude-fable-5-1"],

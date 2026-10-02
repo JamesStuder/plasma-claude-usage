@@ -1,12 +1,22 @@
 # plasma-claude-usage
 
-A KDE Plasma 6 system-tray widget that shows where you stand on your **Claude Code**
-plan: how much of each limit is used, when it resets, whether you're on pace to run out,
-and how many tokens you used today and this week.
+A KDE Plasma 6 panel widget for **Claude Code**: your background sessions (which ones
+need input, which are done) and where you stand on your plan — how much of each limit is
+used, when it resets, whether you're on pace to run out, and how many tokens you used
+today and this week.
 
-- **Badge** on the tray icon: current 5-hour session usage in percent, coloured by your
-  highest limit (green, orange from 70 %, red from 90 %).
-- **Left click** opens the panel:
+- **Badges** on the icon: current 5-hour session usage in percent, coloured by your
+  highest limit (green, orange from 70 %, red from 90 %), and the number of background
+  sessions waiting for input.
+- **Left click** opens the panel. The left column lists your background sessions:
+  - **Needs input**, **Working**, **Completed** (newest 10, *Show all* for the rest) and
+    **Failed**, each with its last status line or result and how long ago it changed
+  - **Click** a session to open it in its own terminal window (or raise the window if
+    it's already open). Finished sessions open too, so you can carry on the conversation.
+  - **✕** then **Remove** takes a session off the list (`claude rm`). Its conversation
+    log is kept, so `claude --resume` still finds it.
+
+  The right column shows your usage:
   - **Limits** — every limit on your plan (session, weekly, per-model weekly limits),
     with a meter and the time until it resets
   - **Pace** — a straight-line projection: "on pace for 62 % by reset", or the time you'd
@@ -34,6 +44,8 @@ Today: 131.6M tokens (385.6k output)
 - Claude Code, signed in with a Claude subscription (Pro / Max / Team) — the limits
   come from your Claude Code login
 - Optional: `tmux` for the model and restart buttons, `notify-send` for their confirmations
+- The session list uses `claude agents` / `claude attach` / `claude rm` (background
+  sessions, `claude --bg`)
 
 ## Install
 
@@ -43,12 +55,12 @@ cd plasma-claude-usage
 ./install.sh
 ```
 
-Then right-click the system tray arrow → **Configure System Tray** → **Entries** →
-**Claude Code Usage** → *Always shown*.
+Then right-click your panel → **Add or Manage Widgets** → **Claude Code Usage**, and
+drag it where you want it (next to the system tray works well).
 
-**Panel height:** the system tray gives every popup the same size. If the panel scrolls,
-drag the popup's top edge to make it taller (Plasma remembers it); about 800 px fits
-everything.
+It's a panel widget rather than a system-tray entry because the system tray gives every
+popup the same fixed size, which is too narrow for the two columns. On the panel the
+popup sizes itself so the usage column fits without scrolling.
 
 Remove with `./uninstall.sh`.
 
@@ -63,6 +75,7 @@ Remove with `./uninstall.sh`.
 | `tmux_target` | *(empty)* | e.g. `-L claude -t claude` — tmux socket and pane of your Claude Code session; enables the **Model** and **Restart** buttons |
 | `claude_command` | `claude` | What **Restart** starts in the pane (with `--resume <session id>`) |
 | `models` | current models | The model buttons: `[label, model id]` pairs |
+| `session_command` | `konsole --separate -p tabtitle={name} -e {claude} attach {id}` | Terminal a session opens in; `{claude}` is the first word of `claude_command`, `{id}` / `{name}` the session's. Keep the terminal in the foreground so its window can be raised later. |
 
 `CLAUDE_CONFIG_DIR` is honoured if you keep Claude Code's files somewhere other than
 `~/.claude`.
@@ -86,6 +99,11 @@ Remove with `./uninstall.sh`.
   `--resume <session id>`, so the same conversation continues — handy after an update or
   a settings change that needs a restart. The session id comes from Claude Code's
   `~/.claude/sessions/<pid>.json`; if none is found it starts a fresh session.
+
+- **Sessions** come from `claude agents --json --all`; the status line and result come
+  from Claude Code's `~/.claude/jobs/<id>/state.json`. The list refreshes every 15 s,
+  every 3 s while the panel is open. An open session window is raised with a one-shot
+  KWin script.
 
 Nothing is sent anywhere except the usage request to the same Anthropic endpoint Claude
 Code itself uses.
