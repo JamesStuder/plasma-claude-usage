@@ -28,6 +28,15 @@ PlasmoidItem {
     property var sessionData: null
     property bool showAllDone: false
     property string confirmRemove: ""   // id whose remove button was clicked once
+    // Replacing sessionData rebuilds every session row. Rebuilding the row under the pointer
+    // (polls every 3 s while open) left the panel ignoring clicks, so: skip identical results,
+    // hold new data while the pointer is over the list, and run one poll at a time.
+    property string sessionsKey: ""
+    property var pendingSessions: null
+    property bool sessionsHovered: false
+    property real sessionsBusySince: 0
+    property string usageKey: ""
+    property real now: Date.now()       // ticks every 30 s for the "ago" labels
 
     readonly property var sessions: sessionData && sessionData.sessions ? sessionData.sessions : []
     readonly property int needsCount: sessions.filter(s => s.group === "needs").length
@@ -50,7 +59,34 @@ PlasmoidItem {
     function restart() { exec.connectSource(restartCmd + " #" + Date.now()) }
     function setModel(id) { exec.connectSource(modelCmd + id + " #" + Date.now()) }
     function openUsagePage() { exec.connectSource("xdg-open https://claude.ai/settings/usage #" + Date.now()) }
-    function refreshSessions() { exec.connectSource(sessionsCmd + " #" + Date.now()) }
+    function refreshSessions() {
+        if (sessionsBusySince && Date.now() - sessionsBusySince < 30000) return
+        sessionsBusySince = Date.now()
+        exec.connectSource(sessionsCmd + " #" + Date.now())
+    }
+    function takeSessions(stdout) {
+        sessionsBusySince = 0
+        let d
+        try { d = JSON.parse(stdout) } catch (e) { return }
+        (d.sessions || []).forEach(s => delete s.ago)   // computed here from `updated`
+        const key = JSON.stringify(d)
+        if (key === sessionsKey) return
+        sessionsKey = key
+        if (sessionsHovered) pendingSessions = d
+        else { pendingSessions = null; sessionData = d }
+    }
+    function flushSessions() {
+        if (pendingSessions && !sessionsHovered) { sessionData = pendingSessions; pendingSessions = null }
+    }
+    function takeUsage(stdout) {
+        if (stdout === usageKey) return
+        try { usage = JSON.parse(stdout); usageKey = stdout } catch (e) {}
+    }
+    function ago(ms) {
+        const s = Math.max(0, (now - ms) / 1000)
+        return s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m"
+             : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d"
+    }
     function openSession(id) { exec.connectSource(tool + " --open-session " + id + " #" + Date.now()) }
     function removeSession(id) {
         confirmRemove = ""
@@ -75,8 +111,8 @@ PlasmoidItem {
 
     // The tray hands both buttons to our MouseArea: left toggles the popup, right opens Claude.
     onExpandedChanged: () => {
-        if (root.expanded) { root.refresh(false); root.refreshSessions() }
-        else { root.confirmRemove = ""; root.showAllDone = false }
+        if (root.expanded) { root.now = Date.now(); root.refresh(false); root.refreshSessions() }
+        else { root.confirmRemove = ""; root.showAllDone = false; root.sessionsHovered = false; root.flushSessions() }
     }
 
     compactRepresentation: Item {
@@ -212,6 +248,9 @@ PlasmoidItem {
             Layout.preferredWidth: Kirigami.Units.gridUnit * 25
             contentWidth: availableWidth
             PC3.ScrollBar.horizontal.policy: PC3.ScrollBar.AlwaysOff
+            HoverHandler {
+                onHoveredChanged: { root.sessionsHovered = hovered; root.flushSessions() }
+            }
 
             ColumnLayout {
                 width: sessionScroll.availableWidth - Kirigami.Units.largeSpacing * 2
@@ -438,7 +477,7 @@ PlasmoidItem {
                         Layout.fillWidth: true
                     }
                     PC3.Label {
-                        text: (row.modelData.open ? "open · " : "") + row.modelData.ago
+                        text: (row.modelData.open ? "open · " : "") + root.ago(row.modelData.updated)
                         opacity: 0.6
                         font: Kirigami.Theme.smallFont
                     }
@@ -503,12 +542,12 @@ PlasmoidItem {
             if (source === root.pollCmd)
                 root.running = data.stdout.trim() === "on"
             else if (source.startsWith(root.sessionsCmd + " #")) {
-                try { root.sessionData = JSON.parse(data.stdout) } catch (e) {}
+                root.takeSessions(data.stdout)
             }
             else if (source.startsWith(root.tool + " --remove-session "))
                 root.refreshSessions()
             else if (source.startsWith(root.usageCmd) || source.startsWith(root.refreshCmd)) {
-                try { root.usage = JSON.parse(data.stdout) } catch (e) {}
+                root.takeUsage(data.stdout)
             }
             disconnectSource(source)
         }
@@ -528,6 +567,12 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         onTriggered: root.refreshSessions()
+    }
+    Timer {
+        interval: 30000
+        running: root.expanded
+        repeat: true
+        onTriggered: root.now = Date.now()
     }
     Timer {
         interval: 60000
